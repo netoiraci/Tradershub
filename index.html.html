@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #121212; color: #e0e0e0; }
+        body { background-color: #121212; color: #e0e0e0; font-family: 'Inter', sans-serif; }
         .sidebar-item:hover { background-color: #282828; }
         .sidebar-item-active { background-color: #581c87; color: white; }
         ::-webkit-scrollbar { width: 8px; }
@@ -19,6 +19,9 @@
         ::-webkit-scrollbar-thumb { background: #404040; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #525252; }
     </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div id="root"></div>
@@ -39,6 +42,7 @@
             const [loading, setLoading] = React.useState(true);
 
             const fetchProfile = async (userId) => {
+                if (!userId) { setProfile(null); return null; }
                 const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
                 if (error) console.error('Error fetching profile:', error);
                 setProfile(data);
@@ -86,7 +90,7 @@
             const xpProgress = (profile.xp / xpForNextLevel) * 100;
 
             return (
-                <div className="w-80 bg-gray-900 h-screen p-4 space-y-6 fixed right-0 top-0 overflow-y-auto">
+                <div className="w-80 bg-gray-900 h-screen p-4 space-y-6 fixed right-0 top-0 overflow-y-auto hidden lg:block">
                     <div className="bg-gray-800 rounded-lg p-4">
                         <div className="flex items-center space-x-3">
                             <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-xl font-bold">{profile.name?.charAt(0) || 'U'}</div>
@@ -132,7 +136,7 @@
 
             const NavItem = ({ page, icon, children }) => (
                 <li className={`flex items-center p-3 my-1 rounded-lg cursor-pointer transition-colors ${activePage === page ? 'sidebar-item-active' : 'text-gray-300 sidebar-item'}`} onClick={() => setActivePage(page)}>
-                    <i className={`fas ${icon} w-6 text-center`}></i><span className="ml-3">{children}</span>
+                    <i className={`fas ${icon} w-6 text-center`}></i><span className="ml-3 font-medium">{children}</span>
                 </li>
             );
 
@@ -148,7 +152,7 @@
                         <div className="mt-auto">
                            <NavItem page="Perfil" icon="fa-user-circle">Perfil</NavItem>
                            <button onClick={() => supabase.auth.signOut()} className="w-full text-left flex items-center p-3 my-1 rounded-lg cursor-pointer transition-colors text-gray-300 sidebar-item">
-                               <i className="fas fa-sign-out-alt w-6 text-center"></i><span className="ml-3">Sair</span>
+                               <i className="fas fa-sign-out-alt w-6 text-center"></i><span className="ml-3 font-medium">Sair</span>
                            </button>
                         </div>
                     ) : (
@@ -172,7 +176,7 @@
                 setMessage('');
                 
                 if (isSignUp) {
-                    const { error } = await supabase.auth.signUp({ email, password, options: { data: { name: name, bio: '' } } });
+                    const { error } = await supabase.auth.signUp({ email, password, options: { data: { name: name } } });
                     if (error) setMessage(error.message);
                     else setMessage('Cadastro realizado! Verifique seu e-mail para confirmação.');
                 } else {
@@ -243,7 +247,7 @@
             React.useEffect(() => {
                 fetchMessages();
                 const channel = supabase.channel('public:messages').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
-                    setMessages(currentMessages => [...currentMessages, payload.new]);
+                     setMessages(currentMessages => [...currentMessages, payload.new]);
                 }).subscribe();
                 return () => supabase.removeChannel(channel);
             }, []);
@@ -255,8 +259,12 @@
             const handleSendMessage = async (e) => {
                 e.preventDefault();
                 if (!newMessage.trim() || !user) return;
-                await supabase.from('messages').insert({ content: newMessage, user_id: user.id });
-                setNewMessage('');
+                const { error } = await supabase.from('messages').insert({ content: newMessage, user_id: user.id });
+                if (error) {
+                    console.error("Chat error:", error);
+                } else {
+                    setNewMessage('');
+                }
             };
 
             return (
@@ -321,9 +329,13 @@
                     <form onSubmit={async e => {
                         e.preventDefault();
                         if (!title.trim() || !content.trim()) return;
-                        await supabase.from('posts').insert({ title, content, user_id: user.id, section: 'Feed' });
-                        setTitle(''); setContent('');
-                        onPostCreated();
+                        const { error } = await supabase.from('posts').insert({ title, content, user_id: user.id, section: 'Feed' });
+                        if (error) {
+                            console.error("Post error:", error);
+                        } else {
+                            setTitle(''); setContent('');
+                            onPostCreated();
+                        }
                     }}>
                         <input type="text" placeholder="Título" value={title} onChange={e => setTitle(e.target.value)} className="w-full p-2 bg-gray-700 rounded-md mb-2 text-white" />
                         <textarea placeholder="O que você está pensando?" value={content} onChange={e => setContent(e.target.value)} className="w-full p-2 bg-gray-700 rounded-md mb-2 text-white" rows="3"></textarea>
@@ -361,7 +373,7 @@
                 if (loading) return <div className="p-8"><h1 className="text-3xl font-bold text-white">Carregando...</h1></div>;
 
                 switch(activePage) {
-                    case 'Login': return <LoginPage />;
+                    case 'Login': return <div className="w-full h-full flex items-center justify-center"><LoginPage /></div>;
                     case 'Feed': return user ? <FeedPage /> : <LoginPage />;
                     case 'Chat': return user ? <ChatPage /> : <LoginPage />;
                     case 'Mercado': return user ? <MarketPage /> : <LoginPage />;
@@ -369,11 +381,13 @@
                     default: return <LoginPage />;
                 }
             };
+            
+            const mainContentMargin = user ? "ml-64 lg:mr-80" : "ml-0";
 
             return (
                 <div className="flex min-h-screen">
-                    <Sidebar activePage={activePage} setActivePage={setActivePage} />
-                    <main className="flex-grow ml-64">
+                    {user && <Sidebar activePage={activePage} setActivePage={setActivePage} />}
+                    <main className={`flex-grow transition-all duration-300 ${mainContentMargin}`}>
                         {renderPage()}
                     </main>
                     {user && <RightSidebar />}
