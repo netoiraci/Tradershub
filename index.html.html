@@ -1,403 +1,73 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Comunidade TradersHub</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.1/css/all.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #121212; color: #e0e0e0; font-family: 'Inter', sans-serif; }
-        .sidebar-item:hover { background-color: #282828; }
-        .sidebar-item-active { background-color: #581c87; color: white; }
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1e1e1e; }
-        ::-webkit-scrollbar-thumb { background: #404040; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #525252; }
-    </style>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-</head>
-<body>
-    <div id="root"></div>
+  -- SQL para a Versão Masterpiece da Comunidade TradersHub
 
-    <script type="text/babel">
-        // --- CONFIGURAÇÃO ---
-        const SUPABASE_URL = "https://rwvrptrjypkcfbbrggiu.supabase.co"; 
-        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3dnJwdHJqeXBrY2ZiYnJnZ2l1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIzNTE0MjUsImV4cCI6MjA2NzkyNzQyNX0.VKEcGzWbBAnIeQvNs8sYXcr1KJJHn8oizVCkCq95lCQ";
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  -- 1. Habilita a extensão pgcrypto se ainda não estiver habilitada (necessária para o Supabase Storage).
+  CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-        // --- CONTEXTO DE AUTENTICAÇÃO ---
-        const AuthContext = React.createContext(null);
-        const useAuth = () => React.useContext(AuthContext);
+  -- 2. Garante que a tabela de perfis tenha as colunas necessárias.
+  ALTER TABLE public.profiles
+  ADD COLUMN IF NOT EXISTS bio TEXT,
+  ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0 NOT NULL,
+  ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1 NOT NULL,
+  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 
-        const AuthProvider = ({ children }) => {
-            const [user, setUser] = React.useState(null);
-            const [profile, setProfile] = React.useState(null);
-            const [loading, setLoading] = React.useState(true);
+  -- 3. Modifica a tabela de mensagens para suportar canais e anexos (estilo Discord).
+  ALTER TABLE public.messages
+  ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'geral' NOT NULL,
+  ADD COLUMN IF NOT EXISTS attachment_url TEXT,
+  ADD COLUMN IF NOT EXISTS attachment_type TEXT; -- 'image', 'file', etc.
 
-            const fetchProfile = async (userId) => {
-                if (!userId) { setProfile(null); return null; }
-                const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
-                if (error) console.error('Error fetching profile:', error);
-                setProfile(data);
-                return data;
-            };
+  -- 4. Cria a função de gamificação para adicionar XP a um usuário.
+  -- Esta função será chamada pela aplicação sempre que um usuário realizar uma ação.
+  CREATE OR REPLACE FUNCTION award_xp(user_id_input UUID, xp_to_add INT)
+  RETURNS void
+  LANGUAGE plpgsql
+  AS $$
+  DECLARE
+    new_xp INT;
+    new_level INT;
+  BEGIN
+    -- Adiciona o XP ao perfil do usuário.
+    UPDATE public.profiles
+    SET xp = xp + xp_to_add
+    WHERE id = user_id_input
+    RETURNING xp INTO new_xp;
 
-            React.useEffect(() => {
-                const getSession = async () => {
-                    const { data: { session } } = await supabase.auth.getSession();
-                    setUser(session?.user ?? null);
-                    if (session?.user) await fetchProfile(session.user.id);
-                    setLoading(false);
-                };
-                getSession();
+    -- Calcula o novo nível (ex: 100 XP por nível).
+    new_level := floor(new_xp / 100) + 1;
 
-                const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-                    setUser(session?.user ?? null);
-                    if (session?.user) {
-                        await fetchProfile(session.user.id);
-                    } else {
-                        setProfile(null);
-                    }
-                    setLoading(false);
-                });
-                return () => authListener.subscription.unsubscribe();
-            }, []);
+    -- Atualiza o nível se ele mudou.
+    UPDATE public.profiles
+    SET level = new_level
+    WHERE id = user_id_input AND level <> new_level;
+  END;
+  $$;
 
-            const value = { user, profile, loading, isAdmin: profile?.role === 'admin' };
-            return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-        };
+  -- 5. Configura o Supabase Storage para avatares e anexos do chat.
+  -- Cria os "buckets" (pastas de armazenamento).
+  INSERT INTO storage.buckets (id, name, public)
+  VALUES ('avatars', 'avatars', true)
+  ON CONFLICT (id) DO NOTHING;
 
-        // --- COMPONENTES ---
+  INSERT INTO storage.buckets (id, name, public)
+  VALUES ('attachments', 'attachments', true)
+  ON CONFLICT (id) DO NOTHING;
 
-        const RightSidebar = () => {
-            const { user, profile } = useAuth();
-            const marketData = [
-                { symbol: 'BTC', name: 'Bitcoin', price: 68250.30, changePercent: 2.45 },
-                { symbol: 'ETH', name: 'Ethereum', price: 3580.75, changePercent: -1.40 },
-                { symbol: 'SOL', name: 'Solana', price: 168.45, changePercent: 14.28 },
-            ];
+  -- 6. Define as Políticas de Segurança para o Storage.
+  -- Permite que usuários logados vejam todos os avatares e anexos.
+  DROP POLICY IF EXISTS "Allow public read access" ON storage.objects;
+  CREATE POLICY "Allow public read access" ON storage.objects FOR SELECT USING (true);
 
-            if (!user || !profile) return null;
+  -- Permite que um usuário logado envie seu próprio avatar.
+  DROP POLICY IF EXISTS "Allow authenticated user to upload avatar" ON storage.objects;
+  CREATE POLICY "Allow authenticated user to upload avatar" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'avatars' AND auth.uid() = (storage.foldername(name))[1]::uuid);
 
-            const xpForNextLevel = (profile.level * 100);
-            const xpProgress = (profile.xp / xpForNextLevel) * 100;
+  -- Permite que um usuário logado envie anexos no chat.
+  DROP POLICY IF EXISTS "Allow authenticated user to upload attachments" ON storage.objects;
+  CREATE POLICY "Allow authenticated user to upload attachments" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'attachments' AND auth.uid() IS NOT NULL);
 
-            return (
-                <div className="w-80 bg-gray-900 h-screen p-4 space-y-6 fixed right-0 top-0 overflow-y-auto hidden lg:block">
-                    <div className="bg-gray-800 rounded-lg p-4">
-                        <div className="flex items-center space-x-3">
-                            <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-xl font-bold">{profile.name?.charAt(0) || 'U'}</div>
-                            <div>
-                                <h3 className="font-bold text-white">{profile.name}</h3>
-                                <p className="text-sm text-gray-400">Nível {profile.level}</p>
-                            </div>
-                        </div>
-                        <div className="mt-4">
-                            <div className="flex justify-between text-xs text-gray-400 mb-1">
-                                <span>Progresso</span>
-                                <span>{profile.xp} / {xpForNextLevel} XP</span>
-                            </div>
-                            <div className="w-full bg-gray-700 rounded-full h-2.5">
-                                <div className="bg-purple-600 h-2.5 rounded-full" style={{ width: `${xpProgress}%` }}></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div className="bg-gray-800 rounded-lg p-4">
-                        <h4 className="font-bold text-white mb-3">Mercado</h4>
-                        <div className="space-y-3">
-                            {marketData.map(crypto => (
-                                <div key={crypto.symbol} className="flex justify-between items-center">
-                                    <div>
-                                        <p className="font-bold text-sm text-white">{crypto.symbol}</p>
-                                        <p className="text-xs text-gray-400">{crypto.name}</p>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className="font-bold text-sm text-white">${crypto.price.toLocaleString()}</p>
-                                        <p className={`text-xs ${crypto.changePercent >= 0 ? 'text-green-500' : 'text-red-500'}`}>{crypto.changePercent.toFixed(2)}%</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-        
-        const Sidebar = ({ activePage, setActivePage }) => {
-            const { user } = useAuth();
-            const tradingSpaces = ["Feed", "Chat", "Mercado"];
-
-            const NavItem = ({ page, icon, children }) => (
-                <li className={`flex items-center p-3 my-1 rounded-lg cursor-pointer transition-colors ${activePage === page ? 'sidebar-item-active' : 'text-gray-300 sidebar-item'}`} onClick={() => setActivePage(page)}>
-                    <i className={`fas ${icon} w-6 text-center`}></i><span className="ml-3 font-medium">{children}</span>
-                </li>
-            );
-
-            return (
-                <div className="w-64 bg-gray-900 h-screen p-4 flex flex-col fixed left-0 top-0">
-                    <div className="text-white text-2xl font-bold mb-10 flex items-center"><i className="fas fa-chart-line mr-3 text-purple-400"></i>TradersHub</div>
-                    <ul className="flex-grow">
-                        <NavItem page="Feed" icon="fa-home">Feed</NavItem>
-                        <NavItem page="Chat" icon="fa-comments">Chat</NavItem>
-                        <NavItem page="Mercado" icon="fa-chart-pie">Mercado</NavItem>
-                    </ul>
-                    {user ? (
-                        <div className="mt-auto">
-                           <NavItem page="Perfil" icon="fa-user-circle">Perfil</NavItem>
-                           <button onClick={() => supabase.auth.signOut()} className="w-full text-left flex items-center p-3 my-1 rounded-lg cursor-pointer transition-colors text-gray-300 sidebar-item">
-                               <i className="fas fa-sign-out-alt w-6 text-center"></i><span className="ml-3 font-medium">Sair</span>
-                           </button>
-                        </div>
-                    ) : (
-                         <div className="mt-auto"><NavItem page="Login" icon="fa-sign-in-alt">Login / Cadastro</NavItem></div>
-                    )}
-                </div>
-            );
-        };
-
-        const LoginPage = () => {
-            const [email, setEmail] = React.useState('');
-            const [password, setPassword] = React.useState('');
-            const [name, setName] = React.useState('');
-            const [isSignUp, setIsSignUp] = React.useState(false);
-            const [loading, setLoading] = React.useState(false);
-            const [message, setMessage] = React.useState('');
-
-            const handleAuth = async (e) => {
-                e.preventDefault();
-                setLoading(true);
-                setMessage('');
-                
-                if (isSignUp) {
-                    const { error } = await supabase.auth.signUp({ email, password, options: { data: { name: name } } });
-                    if (error) setMessage(error.message);
-                    else setMessage('Cadastro realizado! Verifique seu e-mail para confirmação.');
-                } else {
-                    const { error } = await supabase.auth.signInWithPassword({ email, password });
-                    if (error) setMessage(error.message);
-                }
-                setLoading(false);
-            };
-            
-            return (
-                <div className="flex items-center justify-center h-full">
-                    <div className="w-full max-w-md bg-gray-900 p-8 rounded-lg shadow-lg">
-                        <h2 className="text-2xl text-white font-bold text-center mb-6">{isSignUp ? 'Criar Conta' : 'Login'}</h2>
-                        <form onSubmit={handleAuth} className="space-y-4">
-                            {isSignUp && <input type="text" placeholder="Seu Nome" value={name} onChange={e => setName(e.target.value)} required className="w-full p-3 bg-gray-800 border border-gray-700 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500" />}
-                            <input type="email" placeholder="E-mail" value={email} onChange={e => setEmail(e.target.value)} required className="w-full p-3 bg-gray-800 border border-gray-700 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500" />
-                            <input type="password" placeholder="Senha" value={password} onChange={e => setPassword(e.target.value)} required className="w-full p-3 bg-gray-800 border border-gray-700 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500" />
-                            <button type="submit" disabled={loading} className="w-full p-3 bg-purple-600 text-white font-semibold rounded-md hover:bg-purple-700 disabled:opacity-50">{loading ? 'Aguarde...' : (isSignUp ? 'Cadastrar' : 'Entrar')}</button>
-                            {message && <p className="text-center text-red-400 mt-2">{message}</p>}
-                        </form>
-                        <p className="text-center text-gray-400 mt-4">
-                            {isSignUp ? 'Já tem uma conta?' : 'Não tem uma conta?'}
-                            <button onClick={() => setIsSignUp(!isSignUp)} className="text-purple-400 hover:underline ml-1">{isSignUp ? 'Faça login' : 'Cadastre-se'}</button>
-                        </p>
-                    </div>
-                </div>
-            );
-        };
-        
-        // --- PÁGINAS ---
-        const FeedPage = () => {
-            const [posts, setPosts] = React.useState([]);
-            const { user } = useAuth();
-            
-            const fetchPosts = async () => {
-                const { data } = await supabase.from('posts').select('*, profile:profiles(name)').order('created_at', { ascending: false });
-                setPosts(data || []);
-            };
-            
-            React.useEffect(() => {
-                fetchPosts();
-                const channel = supabase.channel('public:posts').on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, payload => fetchPosts()).subscribe();
-                return () => supabase.removeChannel(channel);
-            }, []);
-
-            return (
-                <div className="p-8">
-                    <h1 className="text-3xl font-bold text-white mb-6">Feed Principal</h1>
-                    {user && <CreatePostForm onPostCreated={fetchPosts} />}
-                    <div className="space-y-6">
-                        {posts.map(post => <PostCard key={post.id} post={post} />)}
-                    </div>
-                </div>
-            );
-        };
-
-        const ChatPage = () => {
-            const [messages, setMessages] = React.useState([]);
-            const [newMessage, setNewMessage] = React.useState('');
-            const { user } = useAuth();
-            const messagesEndRef = React.useRef(null);
-
-            const fetchMessages = async () => {
-                const { data } = await supabase.from('messages').select('*, profile:profiles(name)').order('created_at');
-                setMessages(data || []);
-            };
-            
-            React.useEffect(() => {
-                fetchMessages();
-                const channel = supabase.channel('public:messages').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
-                     setMessages(currentMessages => [...currentMessages, payload.new]);
-                }).subscribe();
-                return () => supabase.removeChannel(channel);
-            }, []);
-
-            React.useEffect(() => {
-                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-            }, [messages]);
-
-            const handleSendMessage = async (e) => {
-                e.preventDefault();
-                if (!newMessage.trim() || !user) return;
-                const { error } = await supabase.from('messages').insert({ content: newMessage, user_id: user.id });
-                if (error) {
-                    console.error("Chat error:", error);
-                } else {
-                    setNewMessage('');
-                }
-            };
-
-            return (
-                <div className="p-8 h-full flex flex-col">
-                    <h1 className="text-3xl font-bold text-white mb-6">Chat da Comunidade</h1>
-                    <div className="bg-gray-800 rounded-lg flex-grow flex flex-col p-4">
-                        <div className="flex-grow overflow-y-auto space-y-4 pr-2">
-                            {messages.map(msg => (
-                                <div key={msg.id} className="flex items-start space-x-3">
-                                    <div className="w-10 h-10 bg-gray-600 rounded-full flex items-center justify-center font-bold">{msg.profile?.name?.charAt(0) || 'U'}</div>
-                                    <div>
-                                        <p className="font-bold text-purple-400">{msg.profile?.name || 'Usuário'}</p>
-                                        <p className="text-white">{msg.content}</p>
-                                    </div>
-                                </div>
-                            ))}
-                            <div ref={messagesEndRef} />
-                        </div>
-                        <form onSubmit={handleSendMessage} className="mt-4 flex space-x-2">
-                            <input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} className="w-full p-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none" placeholder="Digite sua mensagem..." />
-                            <button type="submit" className="px-6 py-2 bg-purple-600 text-white font-semibold rounded-md hover:bg-purple-700">Enviar</button>
-                        </form>
-                    </div>
-                </div>
-            );
-        };
-
-        const MarketPage = () => {
-             const marketData = [
-                { symbol: 'BTC', name: 'Bitcoin', price: 68250.30, changePercent: 2.45, marketCap: "1.3T" },
-                { symbol: 'ETH', name: 'Ethereum', price: 3580.75, changePercent: -1.40, marketCap: "430B" },
-                { symbol: 'SOL', name: 'Solana', price: 168.45, changePercent: 14.28, marketCap: "77B" },
-                { symbol: 'BNB', name: 'BNB', price: 594.20, changePercent: 1.80, marketCap: "87B" },
-            ];
-            return (
-                <div className="p-8">
-                    <h1 className="text-3xl font-bold text-white mb-6">Dashboard de Mercado</h1>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                        {marketData.map(crypto => (
-                            <div key={crypto.symbol} className="bg-gray-800 p-6 rounded-lg">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-xl font-bold text-white">{crypto.name} ({crypto.symbol})</h3>
-                                    <p className={`font-bold ${crypto.changePercent >= 0 ? 'text-green-500' : 'text-red-500'}`}>{crypto.changePercent.toFixed(2)}%</p>
-                                </div>
-                                <p className="text-3xl font-light text-white">${crypto.price.toLocaleString()}</p>
-                                <p className="text-sm text-gray-400 mt-1">Market Cap: ${crypto.marketCap}</p>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            );
-        };
-        
-        // --- COMPONENTES AUXILIARES ---
-        const CreatePostForm = ({ onPostCreated }) => {
-            const { user } = useAuth();
-            const [title, setTitle] = React.useState('');
-            const [content, setContent] = React.useState('');
-            return (
-                <div className="bg-gray-800 p-4 rounded-lg mb-6">
-                    <h3 className="font-bold text-white mb-2">Criar Publicação</h3>
-                    <form onSubmit={async e => {
-                        e.preventDefault();
-                        if (!title.trim() || !content.trim()) return;
-                        const { error } = await supabase.from('posts').insert({ title, content, user_id: user.id, section: 'Feed' });
-                        if (error) {
-                            console.error("Post error:", error);
-                        } else {
-                            setTitle(''); setContent('');
-                            onPostCreated();
-                        }
-                    }}>
-                        <input type="text" placeholder="Título" value={title} onChange={e => setTitle(e.target.value)} className="w-full p-2 bg-gray-700 rounded-md mb-2 text-white" />
-                        <textarea placeholder="O que você está pensando?" value={content} onChange={e => setContent(e.target.value)} className="w-full p-2 bg-gray-700 rounded-md mb-2 text-white" rows="3"></textarea>
-                        <button type="submit" className="px-4 py-2 bg-purple-600 text-white font-semibold rounded-md hover:bg-purple-700">Publicar</button>
-                    </form>
-                </div>
-            );
-        };
-        
-        const PostCard = ({ post }) => (
-            <div className="bg-gray-800 p-4 rounded-lg">
-                <div className="flex items-center space-x-3 mb-2">
-                    <div className="w-10 h-10 bg-gray-600 rounded-full flex items-center justify-center font-bold">{post.profile?.name?.charAt(0) || 'U'}</div>
-                    <div>
-                        <p className="font-bold text-white">{post.profile?.name || 'Usuário'}</p>
-                        <p className="text-xs text-gray-400">{new Date(post.created_at).toLocaleString('pt-BR')}</p>
-                    </div>
-                </div>
-                <h4 className="font-bold text-lg text-white mb-1">{post.title}</h4>
-                <p className="text-gray-300">{post.content}</p>
-            </div>
-        );
-
-        // --- APLICAÇÃO PRINCIPAL ---
-        function App() {
-            const [activePage, setActivePage] = React.useState('Feed');
-            const { user, loading } = useAuth();
-
-            React.useEffect(() => {
-                if (!loading && !user) setActivePage('Login');
-                if (!loading && user && activePage === 'Login') setActivePage('Feed');
-            }, [user, loading]);
-
-            const renderPage = () => {
-                if (loading) return <div className="p-8"><h1 className="text-3xl font-bold text-white">Carregando...</h1></div>;
-
-                switch(activePage) {
-                    case 'Login': return <div className="w-full h-full flex items-center justify-center"><LoginPage /></div>;
-                    case 'Feed': return user ? <FeedPage /> : <LoginPage />;
-                    case 'Chat': return user ? <ChatPage /> : <LoginPage />;
-                    case 'Mercado': return user ? <MarketPage /> : <LoginPage />;
-                    case 'Perfil': return user ? <div className="p-8"><h1 className="text-3xl font-bold text-white">Perfil</h1></div> : <LoginPage />;
-                    default: return <LoginPage />;
-                }
-            };
-            
-            const mainContentMargin = user ? "ml-64 lg:mr-80" : "ml-0";
-
-            return (
-                <div className="flex min-h-screen">
-                    {user && <Sidebar activePage={activePage} setActivePage={setActivePage} />}
-                    <main className={`flex-grow transition-all duration-300 ${mainContentMargin}`}>
-                        {renderPage()}
-                    </main>
-                    {user && <RightSidebar />}
-                </div>
-            );
-        }
-
-        const container = document.getElementById('root');
-        const root = ReactDOM.createRoot(container);
-        root.render(<AuthProvider><App /></AuthProvider>);
-    </script>
-</body>
-</html>
+  -- Permite que um usuário atualize seu próprio avatar.
+  DROP POLICY IF EXISTS "Allow user to update their own avatar" ON storage.objects;
+  CREATE POLICY "Allow user to update their own avatar" ON storage.objects FOR UPDATE
+  USING (auth.uid() = (storage.foldername(name))[1]::uuid);
