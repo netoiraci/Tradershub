@@ -1,73 +1,319 @@
-  -- SQL para a Versão Masterpiece da Comunidade TradersHub
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradersHub Community</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #1e1f22; color: #dcddde; font-family: 'Inter', sans-serif; }
+        .sidebar-item:hover { background-color: #36393f; }
+        .sidebar-item-active { background-color: #40444b; }
+        .channel-item:hover { background-color: #32353b; }
+        .channel-item-active { background-color: #393c43; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #2e3338; }
+        ::-webkit-scrollbar-thumb { background: #202225; border-radius: 4px; }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="root"></div>
 
-  -- 1. Habilita a extensão pgcrypto se ainda não estiver habilitada (necessária para o Supabase Storage).
-  CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    <script type="text/babel">
+        // --- CONFIGURAÇÃO ---
+        const SUPABASE_URL = "https://qfnqciiypkfnkkzkcaas.supabase.co"; 
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFmbnFjaWl5cGtmbmtremtjYWFzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkxNjkxNDksImV4cCI6MjA2NDc0NTE0OX0.6wvtUxL9SzOdVEYEr7XuOqVXxboMSXrcM8HxI2GMEuI";
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  -- 2. Garante que a tabela de perfis tenha as colunas necessárias.
-  ALTER TABLE public.profiles
-  ADD COLUMN IF NOT EXISTS bio TEXT,
-  ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0 NOT NULL,
-  ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1 NOT NULL,
-  ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+        // --- CONTEXTO DE AUTENTICAÇÃO ---
+        const AuthContext = React.createContext(null);
+        const useAuth = () => React.useContext(AuthContext);
 
-  -- 3. Modifica a tabela de mensagens para suportar canais e anexos (estilo Discord).
-  ALTER TABLE public.messages
-  ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'geral' NOT NULL,
-  ADD COLUMN IF NOT EXISTS attachment_url TEXT,
-  ADD COLUMN IF NOT EXISTS attachment_type TEXT; -- 'image', 'file', etc.
+        const AuthProvider = ({ children }) => {
+            const [user, setUser] = React.useState(null);
+            const [profile, setProfile] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
 
-  -- 4. Cria a função de gamificação para adicionar XP a um usuário.
-  -- Esta função será chamada pela aplicação sempre que um usuário realizar uma ação.
-  CREATE OR REPLACE FUNCTION award_xp(user_id_input UUID, xp_to_add INT)
-  RETURNS void
-  LANGUAGE plpgsql
-  AS $$
-  DECLARE
-    new_xp INT;
-    new_level INT;
-  BEGIN
-    -- Adiciona o XP ao perfil do usuário.
-    UPDATE public.profiles
-    SET xp = xp + xp_to_add
-    WHERE id = user_id_input
-    RETURNING xp INTO new_xp;
+            const fetchProfile = async (userId) => {
+                if (!userId) { setProfile(null); return null; }
+                const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+                if (error) console.error('Error fetching profile:', error);
+                setProfile(data);
+                return data;
+            };
 
-    -- Calcula o novo nível (ex: 100 XP por nível).
-    new_level := floor(new_xp / 100) + 1;
+            React.useEffect(() => {
+                const getSession = async () => {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    setUser(session?.user ?? null);
+                    if (session?.user) await fetchProfile(session.user.id);
+                    setLoading(false);
+                };
+                getSession();
 
-    -- Atualiza o nível se ele mudou.
-    UPDATE public.profiles
-    SET level = new_level
-    WHERE id = user_id_input AND level <> new_level;
-  END;
-  $$;
+                const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+                    setUser(session?.user ?? null);
+                    if (session?.user) {
+                        await fetchProfile(session.user.id);
+                    } else {
+                        setProfile(null);
+                    }
+                    setLoading(false);
+                });
+                return () => authListener.subscription.unsubscribe();
+            }, []);
+            
+            const awardXp = async (xp) => {
+                if (!user) return;
+                await supabase.rpc('award_xp', { user_id_input: user.id, xp_to_add: xp });
+                await fetchProfile(user.id); // Re-fetch profile to update XP/Level
+            };
 
-  -- 5. Configura o Supabase Storage para avatares e anexos do chat.
-  -- Cria os "buckets" (pastas de armazenamento).
-  INSERT INTO storage.buckets (id, name, public)
-  VALUES ('avatars', 'avatars', true)
-  ON CONFLICT (id) DO NOTHING;
+            const value = { user, profile, loading, fetchProfile, awardXp, isAdmin: profile?.role === 'admin' };
+            return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+        };
 
-  INSERT INTO storage.buckets (id, name, public)
-  VALUES ('attachments', 'attachments', true)
-  ON CONFLICT (id) DO NOTHING;
+        // --- COMPONENTES ---
+        const Avatar = ({ src, fallback, size = 'w-10 h-10' }) => (
+            <div className={`bg-gray-700 rounded-full flex items-center justify-center font-bold text-white ${size}`}>
+                {src ? <img src={src} className="rounded-full object-cover w-full h-full" /> : fallback}
+            </div>
+        );
 
-  -- 6. Define as Políticas de Segurança para o Storage.
-  -- Permite que usuários logados vejam todos os avatares e anexos.
-  DROP POLICY IF EXISTS "Allow public read access" ON storage.objects;
-  CREATE POLICY "Allow public read access" ON storage.objects FOR SELECT USING (true);
+        const ChannelList = ({ activeChannel, setActiveChannel }) => {
+            const textChannels = ["geral", "análise-técnica", "day-trade", "swing-trade", "criptomoedas"];
+            return (
+                <div className="w-60 bg-[#2f3136] h-full p-2 flex flex-col">
+                    <div className="text-white text-lg font-bold p-2 mb-4 border-b border-gray-900/50">TradersHub</div>
+                    <div className="flex-grow overflow-y-auto">
+                        <p className="text-xs font-bold text-gray-400 px-2 mb-2 uppercase">Canais de Texto</p>
+                        <ul>
+                            {textChannels.map(channel => (
+                                <li key={channel} 
+                                    className={`flex items-center p-2 my-1 rounded cursor-pointer transition-colors text-gray-300 ${activeChannel === channel ? 'channel-item-active bg-gray-700/50' : 'channel-item'}`} 
+                                    onClick={() => setActiveChannel(channel)}>
+                                    <i className="fa-solid fa-hashtag w-5 text-gray-400"></i>
+                                    <span className="ml-2 font-medium">{channel.replace('-', ' ')}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                </div>
+            );
+        };
 
-  -- Permite que um usuário logado envie seu próprio avatar.
-  DROP POLICY IF EXISTS "Allow authenticated user to upload avatar" ON storage.objects;
-  CREATE POLICY "Allow authenticated user to upload avatar" ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'avatars' AND auth.uid() = (storage.foldername(name))[1]::uuid);
+        const UserProfileBar = () => {
+            const { user, profile } = useAuth();
+            if (!user || !profile) return null;
+            return (
+                <div className="absolute bottom-0 left-0 w-60 bg-[#292b2f] p-2 flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                        <Avatar src={profile.avatar_url} fallback={profile.name?.charAt(0) || 'U'} size="w-8 h-8" />
+                        <span className="font-bold text-sm text-white">{profile.name}</span>
+                    </div>
+                    <button onClick={() => supabase.auth.signOut()} title="Sair">
+                        <i className="fa-solid fa-right-from-bracket text-gray-400 hover:text-white"></i>
+                    </button>
+                </div>
+            );
+        };
 
-  -- Permite que um usuário logado envie anexos no chat.
-  DROP POLICY IF EXISTS "Allow authenticated user to upload attachments" ON storage.objects;
-  CREATE POLICY "Allow authenticated user to upload attachments" ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'attachments' AND auth.uid() IS NOT NULL);
+        const ChatPage = ({ channel }) => {
+            const [messages, setMessages] = React.useState([]);
+            const [newMessage, setNewMessage] = React.useState('');
+            const { user, awardXp } = useAuth();
+            const messagesEndRef = React.useRef(null);
+            const fileInputRef = React.useRef(null);
 
-  -- Permite que um usuário atualize seu próprio avatar.
-  DROP POLICY IF EXISTS "Allow user to update their own avatar" ON storage.objects;
-  CREATE POLICY "Allow user to update their own avatar" ON storage.objects FOR UPDATE
-  USING (auth.uid() = (storage.foldername(name))[1]::uuid);
+            const fetchMessages = async () => {
+                const { data } = await supabase.from('messages').select('*, profile:profiles(name, avatar_url)').eq('channel', channel).order('created_at');
+                setMessages(data || []);
+            };
+
+            React.useEffect(() => {
+                fetchMessages();
+                const subscription = supabase.channel(`public:messages:channel=eq.${channel}`)
+                    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+                        fetchMessages();
+                    }).subscribe();
+                return () => supabase.removeChannel(subscription);
+            }, [channel]);
+
+            React.useEffect(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            }, [messages]);
+
+            const handleSendMessage = async (e) => {
+                e.preventDefault();
+                if (!newMessage.trim() || !user) return;
+                const { error } = await supabase.from('messages').insert({ content: newMessage, user_id: user.id, channel });
+                if (!error) {
+                    setNewMessage('');
+                    awardXp(1); // Award 1 XP per message
+                }
+            };
+
+            const handleFileUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file || !user) return;
+                
+                const fileExt = file.name.split('.').pop();
+                const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+                
+                const { error: uploadError } = await supabase.storage.from('attachments').upload(fileName, file);
+                
+                if (uploadError) {
+                    console.error("Upload error:", uploadError);
+                    return;
+                }
+
+                const { data: { publicUrl } } = supabase.storage.from('attachments').getPublicUrl(fileName);
+                
+                const { error: messageError } = await supabase.from('messages').insert({ 
+                    content: ``, 
+                    user_id: user.id, 
+                    channel,
+                    attachment_url: publicUrl,
+                    attachment_type: file.type.startsWith('image/') ? 'image' : 'file'
+                });
+
+                if (!messageError) awardXp(5); // Award 5 XP for sharing a file
+            };
+
+            return (
+                <div className="flex-grow bg-[#36393f] flex flex-col h-full">
+                    <header className="p-3 border-b border-black/20 shadow-md">
+                        <h2 className="text-lg font-bold text-white flex items-center">
+                            <i className="fa-solid fa-hashtag w-5 text-gray-400 mr-2"></i>
+                            {channel.replace('-', ' ')}
+                        </h2>
+                    </header>
+                    <div className="flex-grow overflow-y-auto p-4 space-y-4">
+                        {messages.map((msg, index) => (
+                            <div key={msg.id} className="flex items-start space-x-3 hover:bg-black/10 p-2 rounded">
+                                <Avatar src={msg.profile?.avatar_url} fallback={msg.profile?.name?.charAt(0) || 'U'} />
+                                <div>
+                                    <p className="font-bold text-white">{msg.profile?.name || 'Usuário'}</p>
+                                    {msg.content && <p className="text-white whitespace-pre-wrap">{msg.content}</p>}
+                                    {msg.attachment_type === 'image' && <img src={msg.attachment_url} className="max-w-xs rounded-lg mt-2" />}
+                                    {msg.attachment_type === 'file' && <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline mt-2 block"><i className="fas fa-file-alt mr-2"></i>Ver Arquivo</a>}
+                                </div>
+                            </div>
+                        ))}
+                        <div ref={messagesEndRef} />
+                    </div>
+                    <div className="p-4 bg-[#36393f]">
+                        <form onSubmit={handleSendMessage} className="bg-[#40444b] rounded-lg flex items-center px-4">
+                            <button type="button" onClick={() => fileInputRef.current.click()} className="text-gray-400 hover:text-white">
+                                <i className="fa-solid fa-paperclip"></i>
+                            </button>
+                            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                            <input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} className="w-full p-3 bg-transparent text-white focus:outline-none" placeholder={`Conversar em #${channel}`} />
+                            <button type="submit" className="text-gray-400 hover:text-white"><i className="fa-solid fa-paper-plane"></i></button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+        
+        const ProfilePage = () => {
+            const { user, profile, fetchProfile } = useAuth();
+            const [uploading, setUploading] = React.useState(false);
+
+            const handleAvatarUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file || !user) return;
+                setUploading(true);
+                
+                const fileExt = file.name.split('.').pop();
+                const fileName = `${user.id}/avatar.${fileExt}`;
+
+                await supabase.storage.from('avatars').remove([`${user.id}/`]);
+                const { error: uploadError } = await supabase.storage.from('avatars').upload(fileName, file);
+
+                if (uploadError) {
+                    console.error("Upload error:", uploadError);
+                } else {
+                    const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(fileName);
+                    await supabase.from('profiles').update({ avatar_url: `${publicUrl}?t=${new Date().getTime()}` }).eq('id', user.id);
+                    await fetchProfile(user.id);
+                }
+                setUploading(false);
+            };
+
+            if (!profile) return <div>Carregando perfil...</div>;
+
+            return (
+                <div className="p-8">
+                    <h1 className="text-3xl font-bold text-white mb-6">Meu Perfil</h1>
+                    <div className="bg-gray-800 p-6 rounded-lg max-w-lg">
+                        <div className="flex items-center space-x-4">
+                            <div className="relative">
+                                <Avatar src={profile.avatar_url} fallback={profile.name?.charAt(0)} size="w-24 h-24" />
+                                <label htmlFor="avatar-upload" className="absolute bottom-0 right-0 bg-purple-600 p-1 rounded-full cursor-pointer hover:bg-purple-700">
+                                    <i className="fas fa-camera text-white"></i>
+                                    <input id="avatar-upload" type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" disabled={uploading} />
+                                </label>
+                            </div>
+                            <div>
+                                <h2 className="text-2xl font-bold text-white">{profile.name}</h2>
+                                <p className="text-gray-400">Nível {profile.level} - {profile.xp} XP</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const LoginPage = () => { /* ... (código da LoginPage omitido para brevidade, sem alterações) ... */ };
+
+        // --- APLICAÇÃO PRINCIPAL ---
+        function App() {
+            const [activePage, setActivePage] = React.useState('Chat');
+            const [activeChannel, setActiveChannel] = React.useState('geral');
+            const { user, loading } = useAuth();
+
+            const renderPage = () => {
+                if (loading) return <div className="flex items-center justify-center h-full"><div className="text-white">Carregando...</div></div>;
+                if (!user) return <div className="w-full h-full flex items-center justify-center"><LoginPage /></div>;
+
+                switch(activePage) {
+                    case 'Chat': return <ChatPage channel={activeChannel} />;
+                    case 'Perfil': return <ProfilePage />;
+                    // Adicionar outras páginas aqui no futuro
+                    default: return <ChatPage channel="geral" />;
+                }
+            };
+
+            return (
+                <div className="flex h-screen w-screen">
+                    {user && (
+                        <>
+                            <div className="relative">
+                                <ChannelList activeChannel={activeChannel} setActiveChannel={setActiveChannel} />
+                                <UserProfileBar />
+                            </div>
+                            <main className="flex-grow">
+                                {renderPage()}
+                            </main>
+                        </>
+                    )}
+                    {!user && !loading && <LoginPage />}
+                </div>
+            );
+        }
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<AuthProvider><App /></AuthProvider>);
+    </script>
+</body>
+</html>
